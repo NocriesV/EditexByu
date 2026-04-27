@@ -590,14 +590,16 @@
       <span class="display-title" style="font-size:15px;">Вход</span>
     </div>
     <div style="padding:24px 20px;">
-      <p style="color:var(--muted2);font-size:13px;line-height:1.6;margin-bottom:24px;">
-        Если вы уже регистрировались — мы найдём ваш аккаунт по Telegram ID автоматически.<br><br>
-        Или введите свой username для поиска:
-      </p>
       <div class="form-row">
         <div class="input-group">
-          <label class="input-label">Telegram username</label>
-          <input class="input" placeholder="@username" id="login-username">
+          <label class="input-label">Telegram @username *</label>
+          <input class="input" placeholder="@username" id="login-username" autocomplete="username">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="input-group">
+          <label class="input-label">Пароль *</label>
+          <input class="input" type="password" placeholder="Ваш пароль" id="login-password" autocomplete="current-password">
         </div>
       </div>
       <button class="btn btn-primary" onclick="doLogin()" id="login-btn" style="margin-top:8px;">
@@ -670,7 +672,18 @@
         </div>
         <div class="input-group">
           <label class="input-label">Telegram @username *</label>
-          <input class="input" placeholder="@username" id="setup-tg-username">
+          <input class="input" placeholder="@username" id="setup-tg-username" autocomplete="username">
+        </div>
+      </div>
+
+      <div class="form-row-2">
+        <div class="input-group">
+          <label class="input-label">Пароль *</label>
+          <input class="input" type="password" placeholder="Придумайте пароль" id="setup-password" autocomplete="new-password">
+        </div>
+        <div class="input-group">
+          <label class="input-label">Повторите пароль *</label>
+          <input class="input" type="password" placeholder="Повторите пароль" id="setup-password2" autocomplete="new-password">
         </div>
       </div>
 
@@ -1192,33 +1205,51 @@ async function loadOrCreateUser() {
 async function doLogin() {
   const btn = document.getElementById('login-btn');
   const usernameRaw = (document.getElementById('login-username').value || '').trim().replace(/^@/, '');
+  const passRaw = (document.getElementById('login-password')?.value || '').trim();
+
+  if (!usernameRaw) { showToast('⚠️ Введите username'); return; }
+  if (!passRaw) { showToast('⚠️ Введите пароль'); return; }
 
   btn.disabled = true;
-  btn.textContent = 'Ищем...';
+  btn.textContent = 'Входим...';
+
+  const passwordHash = simpleHash(passRaw);
 
   try {
-    // First try by telegram_id (auto login from TG context)
-    const telegramId = String(state.tgUser.id);
-    let users = await sb.select('users', `telegram_id=eq.${telegramId}&limit=1`);
+    // Search by tg_username + password_hash
+    let users = await sb.select('users',
+      `tg_username=eq.${encodeURIComponent(usernameRaw)}&password_hash=eq.${encodeURIComponent(passwordHash)}&limit=1`
+    );
 
-    // If not found by TG id and username entered — search by username
-    if ((!users || users.length === 0) && usernameRaw) {
-      users = await sb.select('users', `tg_username=eq.${usernameRaw}&limit=1`);
-    }
-
-    if (users && users.length > 0 && users[0].role) {
-      state.user = users[0];
-      state.role = users[0].role;
-      showToast('✅ Добро пожаловать!', 'success');
-      setTimeout(() => enterDashboard(), 500);
-    } else {
-      showToast('❌ Аккаунт не найден. Зарегистрируйтесь.');
+    if (!users || users.length === 0) {
+      // Try without password to give better error
+      const byName = await sb.select('users', `tg_username=eq.${encodeURIComponent(usernameRaw)}&limit=1`);
+      if (byName && byName.length > 0) {
+        showToast('❌ Неверный пароль');
+      } else {
+        showToast('❌ Аккаунт не найден — зарегистрируйтесь');
+      }
       btn.disabled = false;
       btn.textContent = 'Войти →';
+      return;
     }
+
+    const user = users[0];
+    if (!user.role) {
+      showToast('❌ Аккаунт не завершён — зарегистрируйтесь');
+      btn.disabled = false;
+      btn.textContent = 'Войти →';
+      return;
+    }
+
+    state.user = user;
+    state.tgUser = state.tgUser || { id: user.telegram_id };
+    state.role = user.role;
+    showToast('✅ Добро пожаловать, ' + (user.username || '') + '!', 'success');
+    setTimeout(() => enterDashboard(), 500);
   } catch(e) {
     console.error('doLogin error:', e);
-    showToast('❌ Ошибка входа: ' + sbError(e).slice(0, 60));
+    showToast('❌ Ошибка: ' + sbError(e).slice(0, 60));
     btn.disabled = false;
     btn.textContent = 'Войти →';
   }
@@ -2121,7 +2152,14 @@ async function renderMyProfile() {
         <div style="font-size:12px;color:var(--muted2);margin-bottom:4px;">Telegram ID</div>
         <div style="font-size:13px;">${state.tgUser?.id || '—'}</div>
       </div>
-      <button class="btn btn-danger" onclick="logout()">Сменить роль / Выйти</button>
+      <div style="margin-bottom:10px;">
+        <div style="font-family:var(--font-display);font-size:12px;color:var(--muted2);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px;">Переключить аккаунт</div>
+        <div style="display:flex;gap:8px;">
+          <button class="btn ${state.role==='client'?'btn-primary':'btn-secondary'} btn-sm" style="flex:1;" onclick="switchRole('client')">🎬 Заказчик</button>
+          <button class="btn ${state.role==='monter'?'btn-primary':'btn-secondary'} btn-sm" style="flex:1;" onclick="switchRole('monter')">✂️ Монтажёр</button>
+        </div>
+      </div>
+      <button class="btn btn-danger" onclick="logout()">Выйти из аккаунта</button>
     </div>
     <div class="scroll-pad"></div>`;
 }
@@ -2499,11 +2537,29 @@ function goToSetup() {
   showScreen('screen-setup');
 }
 
+// Simple hash for password (not cryptographic — just obfuscation for anon key app)
+function simpleHash(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + ch;
+    hash |= 0;
+  }
+  return 'h' + Math.abs(hash).toString(36) + str.length.toString(36);
+}
+
 async function completeSetup() {
   const name = document.getElementById('setup-name').value.trim();
   let tgUsernameRaw = (document.getElementById('setup-tg-username').value || '').trim().replace(/^@/, '');
+  const pass1 = (document.getElementById('setup-password')?.value || '').trim();
+  const pass2 = (document.getElementById('setup-password2')?.value || '').trim();
+
   if (!name) { showToast('⚠️ Введите имя'); return; }
   if (!tgUsernameRaw) { showToast('⚠️ Введите Telegram username'); return; }
+  if (!pass1) { showToast('⚠️ Придумайте пароль'); return; }
+  if (pass1.length < 4) { showToast('⚠️ Пароль минимум 4 символа'); return; }
+  if (pass1 !== pass2) { showToast('⚠️ Пароли не совпадают'); return; }
+  const passwordHash = simpleHash(pass1);
 
   const btn = document.getElementById('setup-btn');
   btn.disabled = true;
@@ -2527,6 +2583,7 @@ async function completeSetup() {
       role: dbRole,
       username: name,
       tg_username: tgUsernameRaw,
+      password_hash: passwordHash,
     };
     if (experience) updatePayload.experience = experience;
     if (selectedSpecs.length > 0) updatePayload.specialty = selectedSpecs.join(',');
@@ -2558,6 +2615,26 @@ async function completeSetup() {
     showToast('❌ Ошибка сохранения');
     btn.disabled = false;
     btn.textContent = 'Готово — открыть приложение 🚀';
+  }
+}
+
+async function switchRole(newRole) {
+  if (state.role === newRole) {
+    showToast('Вы уже в этом режиме');
+    return;
+  }
+  try {
+    await sb.update('users', { role: newRole }, `telegram_id=eq.${state.tgUser.id}`);
+    state.user.role = newRole;
+    state.role = newRole;
+    state._montersCache = null;
+    state._ordersCache = null;
+    const navListLabel = document.getElementById('nav-list-label');
+    if (navListLabel) navListLabel.textContent = newRole === 'client' ? 'Заказы' : 'Отклики';
+    showToast(newRole === 'client' ? '🎬 Режим заказчика' : '✂️ Режим монтажёра', 'success');
+    await enterDashboard();
+  } catch(e) {
+    showToast('❌ ' + sbError(e).slice(0, 80));
   }
 }
 
