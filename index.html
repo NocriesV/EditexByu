@@ -987,6 +987,7 @@
 // ============ CONFIG ============
 const SUPABASE_URL = 'https://uptmyirrussiitqzvjeu.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVwdG15aXJydXNzaWl0cXp2amV1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzcyNzU1MjcsImV4cCI6MjA5Mjg1MTUyN30.GgiXFG_wUgtTISaoLWcU7h12Wb7pXjn9W6yDExllipQ';
+
 // ============ SUPABASE CLIENT ============
 const sb = {
   async query(path, opts = {}) {
@@ -1015,7 +1016,24 @@ const sb = {
   },
 
   async insert(table, data) {
-    return this.query(table, { method: 'POST', body: data });
+    // Use return=representation to always get back inserted row
+    const url = `${SUPABASE_URL}/rest/v1/${table}`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': `Bearer ${SUPABASE_KEY}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=representation'
+      },
+      body: JSON.stringify(data)
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(err);
+    }
+    const text = await res.text();
+    return text ? JSON.parse(text) : null;
   },
 
   async update(table, data, match) {
@@ -1098,30 +1116,61 @@ function showLoadError(msg) {
 async function loadOrCreateUser() {
   const telegramId = String(state.tgUser.id);
 
-  // Check if user exists
-  const users = await sb.select('users', `telegram_id=eq.${telegramId}&limit=1`);
+  // 1. Try to find existing user
+  let users = null;
+  try {
+    users = await sb.select('users', `telegram_id=eq.${telegramId}&limit=1`);
+  } catch(e) {
+    showLoadError('Ошибка чтения users:<br>' + e.message);
+    return;
+  }
 
   if (users && users.length > 0) {
     state.user = users[0];
-    state.role = state.user.role;
-
+    state.role = state.user.role || null;
     if (state.role) {
-      // Returning user with saved profile — go straight to dashboard
       await enterDashboard();
     } else {
-      // Exists but no role — show onboarding
       showScreen('screen-onboarding');
     }
-  } else {
-    // Brand new user — create minimal record
-    const newUser = await sb.insert('users', {
-      telegram_id: telegramId,
-      username: state.tgUser.username || state.tgUser.first_name || '',
-      role: null
-    });
-    state.user = Array.isArray(newUser) ? newUser[0] : newUser;
-    showScreen('screen-onboarding');
+    return;
   }
+
+  // 2. New user — insert then re-fetch (handles Prefer header issues)
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/users`, {
+      method: 'POST',
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': `Bearer ${SUPABASE_KEY}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=minimal'
+      },
+      body: JSON.stringify({
+        telegram_id: telegramId,
+        username: state.tgUser.username || state.tgUser.first_name || '',
+        role: null
+      })
+    });
+  } catch(e) {
+    showLoadError('Ошибка создания пользователя:<br>' + e.message);
+    return;
+  }
+
+  // 3. Re-fetch after insert
+  try {
+    const fresh = await sb.select('users', `telegram_id=eq.${telegramId}&limit=1`);
+    if (fresh && fresh.length > 0) {
+      state.user = fresh[0];
+    } else {
+      // Fallback: create minimal local object so app can proceed
+      state.user = { telegram_id: telegramId, id: null, role: null };
+    }
+  } catch(e) {
+    state.user = { telegram_id: telegramId, id: null, role: null };
+  }
+
+  showScreen('screen-onboarding');
 }
 
 async function doLogin() {
@@ -2448,6 +2497,14 @@ async function completeSetup() {
   const dbRole = state.role === 'editor' ? 'monter' : 'client';
 
   try {
+    // Re-fetch user if id missing (fallback object from failed insert)
+    if (!state.user?.id) {
+      try {
+        const fresh = await sb.select('users', `telegram_id=eq.${state.tgUser.id}&limit=1`);
+        if (fresh?.[0]) state.user = fresh[0];
+      } catch(e) {}
+    }
+
     const experience = (document.getElementById('setup-experience')?.value || '').trim();
     const selectedSpecs = window._selectedSpecs || [];
     const updatePayload = {
@@ -2458,6 +2515,10 @@ async function completeSetup() {
     if (experience) updatePayload.experience = experience;
     if (selectedSpecs.length > 0) updatePayload.specialty = selectedSpecs.join(',');
     await sb.update('users', updatePayload, `telegram_id=eq.${state.tgUser.id}`);
+    // Re-fetch to get full updated user object
+    const updatedUsers = await sb.select('users', `telegram_id=eq.${state.tgUser.id}&limit=1`);
+    if (updatedUsers?.[0]) state.user = updatedUsers[0];
+    state.user = state.user || {};
     state.user.role = dbRole;
     state.user.username = name;
     state.user.tg_username = tgUsernameRaw;
