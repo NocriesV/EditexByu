@@ -1371,7 +1371,7 @@ async function viewMonterProfileFull(userId) {
   }
 }
 
-function renderMonterProfileById(user, portfolio = []) {
+async function renderMonterProfileById(user, portfolio = []) {
   const name = user.username || 'Монтажёр';
   const initials = name.slice(0, 2).toUpperCase();
   const tgHandle = user.tg_username || '';
