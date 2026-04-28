@@ -1158,10 +1158,8 @@ async function loadOrCreateUser() {
     state.user = users[0];
     state.role = state.user.role || null;
     if (state.role) {
-      // Аккаунт уже зарегистрирован — сразу в дашборд
       await enterDashboard();
     } else {
-      // Аккаунт есть, но регистрация не завершена — на онбординг
       showScreen('screen-onboarding');
     }
     return;
@@ -1194,6 +1192,7 @@ async function loadOrCreateUser() {
     if (fresh && fresh.length > 0) {
       state.user = fresh[0];
     } else {
+      // Fallback: create minimal local object so app can proceed
       state.user = { telegram_id: telegramId, id: null, role: null };
     }
   } catch(e) {
@@ -1205,7 +1204,7 @@ async function loadOrCreateUser() {
 
 async function doLogin() {
   const btn = document.getElementById('login-btn');
-  const usernameRaw = (document.getElementById('login-username').value || '').trim().replace(/^@/, '').toLowerCase();
+  const usernameRaw = (document.getElementById('login-username').value || '').trim().replace(/^@/, '');
   const passRaw = (document.getElementById('login-password')?.value || '').trim();
 
   if (!usernameRaw) { showToast('⚠️ Введите username'); return; }
@@ -1217,26 +1216,25 @@ async function doLogin() {
   const passwordHash = simpleHash(passRaw);
 
   try {
-    // Ищем всех юзеров с этим tg_username (без учёта регистра)
-    const byName = await sb.select('users', `tg_username=ilike.${usernameRaw}&limit=10`);
+    // Search by tg_username + password_hash
+    let users = await sb.select('users',
+      `tg_username=eq.${encodeURIComponent(usernameRaw)}&password_hash=eq.${encodeURIComponent(passwordHash)}&limit=1`
+    );
 
-    if (!byName || byName.length === 0) {
-      showToast('❌ Аккаунт не найден — зарегистрируйтесь');
+    if (!users || users.length === 0) {
+      // Try without password to give better error
+      const byName = await sb.select('users', `tg_username=eq.${encodeURIComponent(usernameRaw)}&limit=1`);
+      if (byName && byName.length > 0) {
+        showToast('❌ Неверный пароль');
+      } else {
+        showToast('❌ Аккаунт не найден — зарегистрируйтесь');
+      }
       btn.disabled = false;
       btn.textContent = 'Войти →';
       return;
     }
 
-    // Ищем совпадение по паролю среди найденных
-    const user = byName.find(u => u.password_hash === passwordHash);
-
-    if (!user) {
-      showToast('❌ Неверный пароль');
-      btn.disabled = false;
-      btn.textContent = 'Войти →';
-      return;
-    }
-
+    const user = users[0];
     if (!user.role) {
       showToast('❌ Аккаунт не завершён — зарегистрируйтесь');
       btn.disabled = false;
@@ -2578,29 +2576,6 @@ async function completeSetup() {
         if (fresh?.[0]) state.user = fresh[0];
       } catch(e) {}
     }
-
-    // БАГ-ФИХ: проверяем — если у юзера уже есть role, значит он уже зарегистрирован
-    if (state.user?.role) {
-      showToast('⚠️ Аккаунт уже зарегистрирован! Войдите через форму входа.');
-      btn.disabled = false;
-      btn.textContent = 'Готово — открыть приложение 🚀';
-      setTimeout(() => showScreen('screen-login'), 1200);
-      return;
-    }
-
-    // Проверяем что tg_username не занят другим юзером
-    try {
-      const existingByUsername = await sb.select('users', `tg_username=ilike.${tgUsernameRaw}&limit=1`);
-      if (existingByUsername && existingByUsername.length > 0) {
-        const other = existingByUsername[0];
-        if (other.telegram_id !== String(state.tgUser.id) && other.role) {
-          showToast('⚠️ Этот username уже занят другим аккаунтом');
-          btn.disabled = false;
-          btn.textContent = 'Готово — открыть приложение 🚀';
-          return;
-        }
-      }
-    } catch(e) {}
 
     const experience = (document.getElementById('setup-experience')?.value || '').trim();
     const selectedSpecs = window._selectedSpecs || [];
